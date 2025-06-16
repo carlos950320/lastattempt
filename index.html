@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Control de Gastos por Categoría</title>
+
+  <!-- 🟢 ENLACE AL MANIFEST -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; margin: 0; box-sizing: border-box; }
+    input, select, button { margin: 5px; padding: 5px; width: 100%; box-sizing: border-box; }
+    .alerta { color: red; font-weight: bold; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    .seccion { border: 1px solid #999; padding: 15px; margin-top: 20px; border-radius: 5px; }
+    .flex-row { display: flex; flex-wrap: wrap; gap: 20px; }
+    .cuadro { flex: 1 1 300px; border: 1px solid #ccc; border-radius: 5px; padding: 10px; box-sizing: border-box; }
+    @media (max-width: 600px) {
+      .flex-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Control de Gastos</h1>
+
+  <div class="flex-row">
+    <div class="cuadro">
+      <h3>Configuración de presupuesto</h3>
+      <label>Salario mensual:</label>
+      <input type="number" id="salario" placeholder="Ej: 2300000">
+      <label>Obligatorios (%)</label>
+      <input type="number" id="porcOblig" value="50">
+      <label>Ocio (%)</label>
+      <input type="number" id="porcOcio" value="30">
+      <label>Ahorro (%)</label>
+      <input type="number" id="porcAhorro" value="20">
+      <button onclick="calcularPresupuesto()">Calcular</button>
+      <div id="resultadoPresupuesto"></div>
+    </div>
+
+    <div class="cuadro">
+      <h3>Resumen por categoría</h3>
+      <div id="resumenCategorias"></div>
+    </div>
+  </div>
+
+  <div class="seccion">
+    <h3>Crear categoría</h3>
+    <input type="text" id="nuevaCategoria" placeholder="Nombre categoría">
+    <select id="tipoCategoria">
+      <option value="Obligatorio">Obligatorio</option>
+      <option value="Ocio">Ocio</option>
+      <option value="Ahorro">Ahorro</option>
+    </select>
+    <button onclick="agregarCategoria()">Agregar categoría</button>
+  </div>
+
+  <div class="seccion">
+    <h3>Crear subitem</h3>
+    <select id="categoriaSubitem"></select>
+    <input type="text" id="nombreSubitem" placeholder="Nombre subitem">
+    <input type="number" id="limiteSubitem" placeholder="Límite del subitem">
+    <button onclick="agregarSubitem()">Agregar subitem</button>
+  </div>
+
+  <div class="seccion">
+    <h3>Registrar gasto</h3>
+    <select id="selectCategoria" onchange="actualizarSelectSubitems()"></select>
+    <select id="selectSubitem"></select>
+    <input type="number" id="valorGasto" placeholder="Valor gastado">
+    <button onclick="registrarGasto()">Registrar gasto</button>
+    <div class="alerta" id="alertaGasto"></div>
+    <h4>Gastos registrados</h4>
+    <table id="tablaGastos">
+      <thead>
+        <tr>
+          <th>Categoría</th>
+          <th>Subitem</th>
+          <th>Valor</th>
+          <th>Editar</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="seccion">
+    <button onclick="resetearTodo()">🔄 Resetear todo</button>
+    <button onclick="eliminarSoloGastos()">🧹 Eliminar solo los valores numéricos</button>
+  </div>
+
+  <script>
+    if (navigator.storage && navigator.storage.persist) {
+      navigator.storage.persist().then(persistent => {
+        if (!persistent) {
+          alert("⚠️ Los datos podrían perderse si cierras la pestaña. Usa el navegador en modo normal y evita el incógnito.");
+        }
+      });
+    }
+
+    let categorias = JSON.parse(localStorage.getItem('categorias')) || [];
+    let subitems = JSON.parse(localStorage.getItem('subitems')) || [];
+    let gastos = JSON.parse(localStorage.getItem('gastos')) || [];
+    let presupuestos = { Obligatorio: 0, Ocio: 0, Ahorro: 0 };
+
+    function guardarDatos() {
+      localStorage.setItem('categorias', JSON.stringify(categorias));
+      localStorage.setItem('subitems', JSON.stringify(subitems));
+      localStorage.setItem('gastos', JSON.stringify(gastos));
+    }
+
+    function resetearTodo() {
+      if (confirm('¿Estás seguro de que deseas borrar todos los datos?')) {
+        localStorage.clear();
+        categorias = [];
+        subitems = [];
+        gastos = [];
+        presupuestos = { Obligatorio: 0, Ocio: 0, Ahorro: 0 };
+        actualizarCategorias();
+        actualizarSelectSubitems();
+        actualizarTablaGastos();
+        actualizarResumen();
+        document.getElementById('resultadoPresupuesto').innerHTML = '';
+      }
+    }
+
+    function eliminarSoloGastos() {
+      if (confirm('¿Seguro que quieres eliminar todos los valores registrados (manteniendo categorías y subitems)?')) {
+        subitems.forEach(s => s.gastado = 0);
+        gastos = [];
+        guardarDatos();
+        actualizarTablaGastos();
+        actualizarResumen();
+        document.getElementById('alertaGasto').textContent = '';
+      }
+    }
+
+    function calcularPresupuesto() {
+      const salario = parseFloat(document.getElementById('salario').value);
+      const oblig = parseFloat(document.getElementById('porcOblig').value);
+      const ocio = parseFloat(document.getElementById('porcOcio').value);
+      const ahorro = parseFloat(document.getElementById('porcAhorro').value);
+      if (salario && oblig + ocio + ahorro === 100) {
+        presupuestos = {
+          Obligatorio: salario * oblig / 100,
+          Ocio: salario * ocio / 100,
+          Ahorro: salario * ahorro / 100
+        };
+        document.getElementById('resultadoPresupuesto').innerHTML = `
+          <p><strong>Obligatorio:</strong> $${presupuestos.Obligatorio}</p>
+          <p><strong>Ocio:</strong> $${presupuestos.Ocio}</p>
+          <p><strong>Ahorro:</strong> $${presupuestos.Ahorro}</p>`;
+        actualizarResumen();
+      }
+    }
+
+    function agregarCategoria() {
+      const nombre = document.getElementById('nuevaCategoria').value;
+      const tipo = document.getElementById('tipoCategoria').value;
+      if (nombre && !categorias.find(c => c.nombre === nombre)) {
+        categorias.push({ nombre, tipo });
+        guardarDatos();
+        actualizarCategorias();
+        actualizarSelectSubitems();
+        document.getElementById('nuevaCategoria').value = '';
+      }
+    }
+
+    function actualizarCategorias() {
+      const selectCat = document.getElementById('categoriaSubitem');
+      const selectGasto = document.getElementById('selectCategoria');
+      selectCat.innerHTML = '';
+      selectGasto.innerHTML = '';
+      categorias.forEach(cat => {
+        const opt1 = document.createElement('option');
+        const opt2 = document.createElement('option');
+        opt1.value = opt2.value = cat.nombre;
+        opt1.textContent = opt2.textContent = cat.nombre;
+        selectCat.appendChild(opt1);
+        selectGasto.appendChild(opt2);
+      });
+    }
+
+    function agregarSubitem() {
+      const categoria = document.getElementById('categoriaSubitem').value;
+      const nombre = document.getElementById('nombreSubitem').value;
+      const limite = parseFloat(document.getElementById('limiteSubitem').value);
+      if (categoria && nombre && !isNaN(limite)) {
+        subitems.push({ categoria, nombre, limite, gastado: 0 });
+        guardarDatos();
+        actualizarSelectSubitems();
+        document.getElementById('nombreSubitem').value = '';
+        document.getElementById('limiteSubitem').value = '';
+      }
+    }
+
+    function actualizarSelectSubitems() {
+      const cat = document.getElementById('selectCategoria').value;
+      const select = document.getElementById('selectSubitem');
+      select.innerHTML = '';
+      subitems.filter(s => s.categoria === cat).forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.nombre;
+        opt.textContent = s.nombre;
+        select.appendChild(opt);
+      });
+    }
+
+    function registrarGasto() {
+      const cat = document.getElementById('selectCategoria').value;
+      const sub = document.getElementById('selectSubitem').value;
+      const valor = parseFloat(document.getElementById('valorGasto').value);
+      const alerta = document.getElementById('alertaGasto');
+      const subitem = subitems.find(s => s.categoria === cat && s.nombre === sub);
+      if (subitem && !isNaN(valor)) {
+        subitem.gastado += valor;
+        gastos.push({ categoria: cat, subitem: sub, valor });
+        guardarDatos();
+        actualizarTablaGastos();
+        actualizarResumen();
+        alerta.textContent = '';
+        document.getElementById('valorGasto').value = '';
+      } else {
+        alerta.textContent = '⚠️ Selecciona una categoría, subitem y valor válido.';
+      }
+    }
+
+    function actualizarTablaGastos() {
+      const tbody = document.querySelector('#tablaGastos tbody');
+      tbody.innerHTML = '';
+      gastos.forEach(g => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${g.categoria}</td>
+          <td>${g.subitem}</td>
+          <td>$${g.valor}</td>
+          <td><button onclick="eliminarGasto(${gastos.indexOf(g)})">🗑️</button></td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function eliminarGasto(index) {
+      const gasto = gastos[index];
+      const sub = subitems.find(s => s.categoria === gasto.categoria && s.nombre === gasto.subitem);
+      if (sub) sub.gastado -= gasto.valor;
+      gastos.splice(index, 1);
+      guardarDatos();
+      actualizarTablaGastos();
+      actualizarResumen();
+    }
+
+    function actualizarResumen() {
+      const resumen = {};
+      subitems.forEach(s => {
+        if (!resumen[s.categoria]) resumen[s.categoria] = 0;
+        resumen[s.categoria] += s.gastado;
+      });
+      const cont = document.getElementById('resumenCategorias');
+      cont.innerHTML = '';
+      Object.keys(resumen).forEach(cat => {
+        const tipo = categorias.find(c => c.nombre === cat)?.tipo || 'Otro';
+        const total = resumen[cat];
+        const limite = presupuestos[tipo] || 0;
+        cont.innerHTML += `<p><strong>${cat} (${tipo}):</strong> $${total} / $${limite}</p>`;
+      });
+    }
+
+    actualizarCategorias();
+    actualizarTablaGastos();
+    actualizarResumen();
+    actualizarSelectSubitems();
+  </script>
+
+  <!-- 🟢 SERVICE WORKER -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(reg => console.log('✔ Service Worker registrado:', reg))
+        .catch(err => console.error('❌ Error al registrar el Service Worker:', err));
+    }
+  </script>
+</body>
+</html>
